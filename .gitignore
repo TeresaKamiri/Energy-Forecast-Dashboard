@@ -1,0 +1,63 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Streamlit cache and logs
+.streamlit/
+logs/
+.cache/
+__pycache__/
+
+# VSCode and editor folders
+.vscode/
+.idea/
+
+# Python virtual environment
+venv/
+env/
+.venv/
+api-env/
+*.egg-info/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Mac and system files
+.DS_Store
+Thumbs.db
+
+# Outputs and artifacts
+*.pkl
+*.h5
+*.hdf5
+*.db
+*.sqlite
+*.log
+*.bak
+*.tmp
+*.swp
+
+# Model artifacts and large output
+*.joblib
+*.sav
+*.npy
+*.npz
+
+# Environment and dependency dumps
+.env
+.env.*
+
+# Data files (customize this based on what you don’t want versioned)
+*.csv
+*.xlsx
+*.xls
+*.json
+*.parquet
+
+# Misc
+*.tar.gz
+*.zip
+*.rar
