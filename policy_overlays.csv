@@ -1,0 +1,29 @@
+sector,end_use,year,multiplier_energy,multiplier_emissions,label
+Domestic/Residential,Space heating,2024,1.0,1.0,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Space heating,2025,0.95,0.942,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Space heating,2026,0.9,0.883,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Space heating,2027,0.85,0.825,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Space heating,2028,0.8,0.767,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Space heating,2029,0.75,0.708,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Space heating,2030,0.7,0.65,BUS+GBIS policy path to 2030 (-30% energy)
+Domestic/Residential,Appliances,2024,1.0,1.0,Electrification & efficiency (-20% emissions)
+Domestic/Residential,Appliances,2025,0.992,0.967,Electrification & efficiency (-20% emissions)
+Domestic/Residential,Appliances,2026,0.983,0.933,Electrification & efficiency (-20% emissions)
+Domestic/Residential,Appliances,2027,0.975,0.9,Electrification & efficiency (-20% emissions)
+Domestic/Residential,Appliances,2028,0.967,0.867,Electrification & efficiency (-20% emissions)
+Domestic/Residential,Appliances,2029,0.958,0.833,Electrification & efficiency (-20% emissions)
+Domestic/Residential,Appliances,2030,0.95,0.8,Electrification & efficiency (-20% emissions)
+Industrial,Process heat,2024,1.0,1.0,CCUS on existing gas (-25% emissions by 2030)
+Industrial,Process heat,2025,0.997,0.958,CCUS on existing gas (-25% emissions by 2030)
+Industrial,Process heat,2026,0.993,0.917,CCUS on existing gas (-25% emissions by 2030)
+Industrial,Process heat,2027,0.99,0.875,CCUS on existing gas (-25% emissions by 2030)
+Industrial,Process heat,2028,0.987,0.833,CCUS on existing gas (-25% emissions by 2030)
+Industrial,Process heat,2029,0.983,0.792,CCUS on existing gas (-25% emissions by 2030)
+Industrial,Process heat,2030,0.98,0.75,CCUS on existing gas (-25% emissions by 2030)
+Services/Commercial,HVAC & Lighting,2024,1.0,1.0,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"
+Services/Commercial,HVAC & Lighting,2025,0.983,0.975,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"
+Services/Commercial,HVAC & Lighting,2026,0.967,0.95,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"
+Services/Commercial,HVAC & Lighting,2027,0.95,0.925,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"
+Services/Commercial,HVAC & Lighting,2028,0.933,0.9,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"
+Services/Commercial,HVAC & Lighting,2029,0.917,0.875,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"
+Services/Commercial,HVAC & Lighting,2030,0.9,0.85,"MEES & PSDS mitigate rebound (-10% energy, -15% emissions)"

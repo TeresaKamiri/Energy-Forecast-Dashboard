@@ -1,0 +1,27 @@
+[
+  {
+    "date": "2024-11-21",
+    "event": "BUS budget set for 2025/26 (\u00a3295m)",
+    "source": "Ofgem BUS page"
+  },
+  {
+    "date": "2026-03-31",
+    "event": "GBIS scheduled end date",
+    "source": "GOV.UK GBIS stats"
+  },
+  {
+    "date": "2026-07-01",
+    "event": "UK ETS: domestic maritime inclusion (MRV phase)",
+    "source": "GOV.UK / ICAP"
+  },
+  {
+    "date": "2027-01-01",
+    "event": "UK CBAM starts",
+    "source": "GOV.UK CBAM factsheet"
+  },
+  {
+    "date": "2028-03-31",
+    "event": "PSDS Phase 4 delivery window end",
+    "source": "Salix Finance timeline"
+  }
+]
