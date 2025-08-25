@@ -10,60 +10,13 @@ import shap
 import xgboost as xgb
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.model_selection import train_test_split
-from typing import List, Optional
+from typing import List
 
-# Data loading
-@st.cache_data
-def load_data():
-    df = pd.read_csv("Merged_Dataset__Energy___Emissions___HDD.csv")
-    df['Year'] = pd.to_numeric(df['Year'], errors='coerce')
-    df.dropna(subset=['Year'], inplace=True)
-    return df
+# Page config
+st.set_page_config(page_title="Energy Dashboard", layout="wide")
+st.title("Energy Dashboard: Trends, Forecasting, Simulations & SHAP Explainability")
 
-df = load_data()
-sectors = df['Sector'].dropna().unique().tolist()
-end_uses = df['End Use'].dropna().unique().tolist()
-
-# Robust loaders for policy files
-def _try_read_csv(paths: List[str]) -> pd.DataFrame:
-    for p in paths:
-        try:
-            dfc = pd.read_csv(p)
-            st.session_state['__policy_csv_path'] = p
-            return dfc
-        except Exception:
-            continue
-    return pd.DataFrame()
-
-def _try_read_json(paths: List[str]):
-    for p in paths:
-        try:
-            with open(p) as f:
-                data = json.load(f)
-                st.session_state['__policy_json_path'] = p
-                return data
-        except Exception:
-            continue
-    return []
-
-# Try common locations
-_policy_csv_paths = [
-    "policy_overlays.csv",
-    "./policy_overlays.csv",
-    "data/policy_overlays.csv",
-    "./data/policy_overlays.csv",
-]
-_policy_json_paths = [
-    "policy_events.json",
-    "./policy_events.json",
-    "data/policy_events.json",
-    "./data/policy_events.json",
-]
-
-policy_overlays_raw = _try_read_csv(_policy_csv_paths)
-policy_events = _try_read_json(_policy_json_paths)
-
-# Normalise overlay labels (case/spacing/synonyms)
+# Normalizers (dataset + overlays)
 def _norm(s: str) -> str:
     return str(s).strip().lower()
 
@@ -85,129 +38,88 @@ def _norm_end_use(s: str) -> str:
         return 'space heating'
     if 'appliance' in s:
         return 'appliances'
-    if 'lighting' in s and 'hvac' in s:
-        return 'hvac & lighting'
-    if 'lighting' in s:
-        # treat pure lighting as hvac & lighting overlay bucket
+    if 'hvac' in s or 'lighting' in s:
         return 'hvac & lighting'
     return s
 
-if not policy_overlays_raw.empty:
-    po = policy_overlays_raw.copy()
-    po.columns = [c.strip().lower() for c in po.columns]
-    # Coerce expected columns
-    rename_map = {
-        'sector': 'sector', 'end_use': 'end_use', 'year': 'year',
-        'multiplier_emissions': 'multiplier_emissions',
-        'multiplier_energy': 'multiplier_energy'
-    }
-    po = po.rename(columns=rename_map)
-    # Ensure essential columns exist
-    for col in ['sector','end_use','year','multiplier_emissions']:
-        if col not in po.columns:
-            st.warning(f"policy_overlays.csv is missing column: {col}")
-    po['year'] = pd.to_numeric(po['year'], errors='coerce').astype('Int64')
-    po['sector_norm'] = po['sector'].map(_norm_sector)
-    po['end_use_norm'] = po['end_use'].map(_norm_end_use)
-    policy_overlays = po
-else:
-    policy_overlays = pd.DataFrame(columns=['sector','end_use','year','multiplier_emissions','multiplier_energy','sector_norm','end_use_norm'])
+# Data loading (+ normalized cols)
+@st.cache_data
+def load_data():
+    df = pd.read_csv("Merged_Dataset__Energy___Emissions___HDD.csv")
+    df['Year'] = pd.to_numeric(df['Year'], errors='coerce')
+    df.dropna(subset=['Year'], inplace=True)
+    df['sector_norm'] = df['Sector'].apply(_norm_sector)
+    df['end_use_norm'] = df['End Use'].apply(_norm_end_use)
+    return df
 
-# Page config
-st.set_page_config(page_title="Energy Dashboard", layout="wide")
-st.title("Energy Dashboard: Trends, Forecasting, Simulations & SHAP Explainability")
+df = load_data()
+sectors = sorted(df['Sector'].dropna().unique().tolist())
+end_uses = sorted(df['End Use'].dropna().unique().tolist())
 
 # Global year filter
 min_year = int(df["Year"].min())
 max_year = int(df["Year"].max())
 year_range = st.sidebar.slider("Filter Year Range", min_value=min_year, max_value=max_year, value=(min_year, max_year))
-df = df[(df["Year"] >= year_range[0]) & (df["Year"] <= year_range[1])]
+df = df[(df["Year"] >= year_range[0]) & (df["Year"] <= year_range[1])].copy()
+# recompute norms after filter
+df['sector_norm'] = df['Sector'].apply(_norm_sector)
+df['end_use_norm'] = df['End Use'].apply(_norm_end_use)
 
 with st.sidebar:
     st.title("⚡ Energy Dashboard")
     selected_tab = st.radio("Navigate", ["Sector Overview", "Trends", "Forecasting", "Simulations", "SHAP Explainability", "EDA"]) 
 
-# Mapping helpers between dataset and overlays
-def map_to_overlay_labels(sector: str, end_use: str):
-    return _norm_sector(sector), _norm_end_use(end_use)
+# Robust loaders for policy files (CSV + JSON)
+def _try_read_csv(paths: List[str]) -> pd.DataFrame:
+    for p in paths:
+        try:
+            po = pd.read_csv(p)
+            st.session_state['__policy_csv_path'] = p
+            return po
+        except Exception:
+            continue
+    return pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
-def get_overlay_row(sector_overlay: str, end_use_overlay: str, year: int):
-    if policy_overlays.empty:
-        return None
-    ov = policy_overlays[(policy_overlays['sector_norm'] == sector_overlay) & (policy_overlays['end_use_norm'] == end_use_overlay)]
-    if ov.empty:
-        return None
-    if year in ov['year'].dropna().values:
-        return ov[ov['year'] == year].iloc[0]
-    # fallback to closest year
-    try:
-        idx = (ov['year'] - year).abs().idxmin()
-        return ov.loc[idx]
-    except Exception:
-        return None
+def _try_read_json(paths: List[str]):
+    for p in paths:
+        try:
+            with open(p) as f:
+                data = json.load(f)
+                st.session_state['__policy_json_path'] = p
+                return data
+        except Exception:
+            continue
+    return []
 
-@st.cache_data(show_spinner=False)
-def forecast_scalar_2030(df_in: pd.DataFrame, sector: str, end_use: str, value_col: str) -> float:
-    """Return 2030 BAU forecast (or last available) for a given Sector/End Use/metric."""
-    subset = df_in[(df_in['Sector'] == sector) & (df_in['End Use'] == end_use)].dropna(subset=[value_col]).sort_values('Year')
-    if subset.empty:
-        return float('nan')
-    ts = subset.set_index('Year')[value_col]
-    years = ts.index.values
-    if len(ts.dropna()) < 5 or years.max() >= 2030:
-        if 2030 in ts.index:
-            return float(ts.loc[2030])
-        return float(ts.iloc[-1])
-    try:
-        model = ARIMA(ts, order=(1,1,1))
-        fitted = model.fit()
-        steps = 2030 - int(years.max())
-        fc = fitted.forecast(steps=steps)
-        return float(fc.iloc[-1])
-    except Exception:
-        return float(ts.iloc[-1])
+_policy_csv_paths = [
+    "policy_overlays.csv", "./policy_overlays.csv",
+    "data/policy_overlays.csv", "./data/policy_overlays.csv",
+]
+_policy_json_paths = [
+    "policy_events.json", "./policy_events.json",
+    "data/policy_events.json", "./data/policy_events.json",
+]
 
-def add_policy_overlays(fig: go.Figure, sector: str, end_use: str, base_long: pd.DataFrame, metric: str = 'emissions') -> go.Figure:
-    """Add dashed policy path + vertical policy events to a Plotly fig.
-    metric: 'emissions' or 'energy' chooses which multiplier to use."""
-    sector_o, end_use_o = map_to_overlay_labels(sector, end_use)
-    if not policy_overlays.empty:
-        ov = policy_overlays[(policy_overlays['sector_norm'] == sector_o) & (policy_overlays['end_use_norm'] == end_use_o)]
-        if not ov.empty and not base_long.empty:
-            base_hist = base_long[base_long.get("Type", pd.Series(index=base_long.index)).eq("Historical")]
-            if base_hist.empty:
-                base_hist = base_long.copy()
-            base_hist = base_hist.sort_values('Year')
-            if not base_hist.empty:
-                anchor = float(base_hist['Value'].iloc[-1])
-                col = 'multiplier_emissions' if metric == 'emissions' else 'multiplier_energy'
-                if col in ov.columns:
-                    y_overlay = anchor * ov[col].astype(float).values
-                    fig.add_trace(go.Scatter(x=ov['year'], y=y_overlay, mode="lines", name="Policy path", line=dict(dash="dash")))
+policy_overlays_raw = _try_read_csv(_policy_csv_paths)
+policy_events = _try_read_json(_policy_json_paths)
 
-    # Event markers
-    if policy_events:
-        # Approx annotation height from figure traces
-        y_max = None
-        if 'Value' in base_long.columns:
-            y_max = float(base_long['Value'].max())
-        else:
-            try:
-                y_max = max([np.nanmax(tr['y']) for tr in fig.data if hasattr(tr, '__getitem__') and 'y' in tr])
-            except Exception:
-                y_max = 0
-        for e in policy_events:
-            try:
-                year = int(str(e.get("date", "").split("-")[0]))
-            except Exception:
-                year = None
-            if year:
-                fig.add_vline(x=year, line_width=1, line_dash="dot", line_color="gray")
-                fig.add_annotation(x=year, y=y_max, text=e.get("event",""), showarrow=False, yshift=10, font=dict(size=9))
-    return fig
+if not policy_overlays_raw.empty:
+    po = policy_overlays_raw.copy()
+    po.columns = [c.strip().lower() for c in po.columns]
+    # ensure essential cols
+    for col in ['sector','end_use','year','multiplier_emissions']:
+        if col not in po.columns:
+            st.warning(f"policy_overlays.csv is missing column: {col}")
+    if 'multiplier_energy' not in po.columns:
+        po['multiplier_energy'] = po['multiplier_emissions']
+    po['year'] = pd.to_numeric(po['year'], errors='coerce').astype('Int64')
+    po['sector_norm'] = po['sector'].apply(_norm_sector)
+    po['end_use_norm']  = po['end_use'].apply(_norm_end_use)
+    policy_overlays = po
+else:
+    policy_overlays = pd.DataFrame(columns=['sector','end_use','year','multiplier_emissions','multiplier_energy','sector_norm','end_use_norm'])
 
-# Long-form builder for Forecast tab
+# Forecast helpers
 def build_long(series_df: pd.DataFrame, value_col: str):
     out = pd.DataFrame(columns=["Year","Value","Type","Metric"])
     model = None
@@ -237,6 +149,128 @@ def build_long(series_df: pd.DataFrame, value_col: str):
         except Exception:
             pass
     return hist_df, model
+
+@st.cache_data(show_spinner=False)
+def get_overlay_row(sector_norm: str, end_use_norm: str, year: int):
+    if policy_overlays.empty:
+        return None
+    ov = policy_overlays[(policy_overlays['sector_norm'] == sector_norm) & (policy_overlays['end_use_norm'] == end_use_norm)]
+    if ov.empty:
+        return None
+    cand = ov[ov['year'] == year]
+    if not cand.empty:
+        return cand.iloc[0]
+    # nearest year fallback
+    try:
+        idx = (ov['year'] - year).abs().idxmin()
+        return ov.loc[idx]
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False)
+def bau2030_norm(df_in: pd.DataFrame, sector_norm: str, end_norm: str) -> float:
+    """Robust BAU 2030 using normalized labels + sensible fallbacks."""
+    sub = df_in[(df_in['sector_norm']==sector_norm) & (df_in['end_use_norm']==end_norm)]
+    if sub.empty:
+        sec = df_in[df_in['sector_norm']==sector_norm]
+        cand = sec[sec['End Use'].str.contains('Lighting|HVAC', case=False, na=False)]
+        if cand.empty:
+            ts = sec.groupby('Year')['Emissions (ktCO2e)'].sum().reset_index()
+        else:
+            ts = cand.groupby('Year')['Emissions (ktCO2e)'].sum().reset_index()
+    else:
+        ts = sub[['Year','Emissions (ktCO2e)']].copy()
+
+    ts = ts.dropna().sort_values('Year')
+    if ts.empty:
+        return float('nan')
+    y = ts.set_index('Year')['Emissions (ktCO2e)']
+    if len(y) < 5:
+        return float(y.loc[2030]) if 2030 in y.index else float(y.iloc[-1])
+    try:
+        m = ARIMA(y, order=(1,1,1)).fit()
+        steps = 2030 - int(y.index.max())
+        if steps <= 0:
+            return float(y.iloc[-1])
+        fc = m.forecast(steps=steps)
+        return float(fc.iloc[-1])
+    except Exception:
+        return float(y.iloc[-1])
+
+# Plot helper: overlays + vertical policy events
+def add_policy_overlays(fig: go.Figure, sector: str, end_use: str, base_long: pd.DataFrame, metric: str = 'emissions') -> go.Figure:
+    """Add dashed policy path + vertical policy events to a Plotly fig.
+    For forecasting views, the overlay follows the BAU series year-by-year:
+    y_overlay(year) = BAU_value(year) * policy_multiplier(year).
+    metric ∈ {'emissions','energy','intensity'} controls which multiplier(s) are used.
+    """
+    sector_o, end_use_o = _norm_sector(sector), _norm_end_use(end_use)
+    ov_year_min = ov_year_max = None
+
+    # ---- Build overlay path by merging overlay multipliers with BAU/base series ----
+    if not policy_overlays.empty and not base_long.empty:
+        ov = policy_overlays[(policy_overlays['sector_norm'] == sector_o) & (policy_overlays['end_use_norm'] == end_use_o)].copy()
+        if not ov.empty:
+            # Select appropriate multiplier(s)
+            col_e = 'multiplier_energy'
+            col_c = 'multiplier_emissions'
+            needed_cols = [col_e, col_c]
+            for c in needed_cols:
+                if c not in ov.columns:
+                    ov[c] = np.nan
+            ov['year'] = pd.to_numeric(ov['year'], errors='coerce')
+            base = base_long[['Year','Value']].dropna().copy()
+            base['Year'] = pd.to_numeric(base['Year'], errors='coerce')
+
+            # Choose multiplier logic
+            if metric == 'energy':
+                ov['mult'] = pd.to_numeric(ov[col_e], errors='coerce')
+            elif metric == 'intensity':
+                # Intensity ≈ Emissions/Energy, so apply ratio of multipliers when available
+                me = pd.to_numeric(ov[col_c], errors='coerce')
+                en = pd.to_numeric(ov[col_e], errors='coerce')
+                ov['mult'] = (me / en).replace([np.inf, -np.inf], np.nan)
+            else:  # 'emissions'
+                ov['mult'] = pd.to_numeric(ov[col_c], errors='coerce')
+
+            merged = pd.merge(ov[['year','mult']], base, left_on='year', right_on='Year', how='left')
+            merged = merged.dropna(subset=['year','mult','Value']).sort_values('year')
+            if not merged.empty:
+                y_overlay = merged['Value'].astype(float) * merged['mult'].astype(float)
+                fig.add_trace(go.Scatter(x=merged['year'], y=y_overlay, mode="lines+markers", name="Policy path", line=dict(dash="dash")))
+                ov_year_min, ov_year_max = int(merged['year'].min()), int(merged['year'].max())
+
+    # ---- Event markers ----
+    if policy_events:
+        y_max = None
+        if 'Value' in base_long.columns and base_long['Value'].notna().any():
+            y_max = float(base_long['Value'].max())
+        if y_max is None:
+            try:
+                y_max = max([np.nanmax(getattr(tr, 'y', np.array([0]))) for tr in fig.data])
+            except Exception:
+                y_max = 0
+        for e in policy_events:
+            try:
+                year = int(str(e.get("date", "").split("-")[0]))
+            except Exception:
+                year = None
+            if year:
+                fig.add_vline(x=year, line_width=1, line_dash="dot", line_color="gray")
+                fig.add_annotation(x=year, y=y_max, text=e.get("event",""), showarrow=False, yshift=10, font=dict(size=9))
+
+    # ---- Ensure x‑axis includes overlay years ----
+    try:
+        base_year_min = int(pd.to_numeric(base_long.get('Year'), errors='coerce').dropna().min()) if 'Year' in base_long else None
+        base_year_max = int(pd.to_numeric(base_long.get('Year'), errors='coerce').dropna().max()) if 'Year' in base_long else None
+        xmin_candidates = [v for v in [base_year_min, ov_year_min] if v is not None]
+        xmax_candidates = [v for v in [base_year_max, ov_year_max] if v is not None]
+        if xmin_candidates and xmax_candidates:
+            fig.update_xaxes(range=[min(xmin_candidates), max(xmax_candidates)])
+    except Exception:
+        pass
+
+    return fig
 
 # Tabs
 if selected_tab == "Trends":
@@ -319,33 +353,33 @@ elif selected_tab == "Simulations":
 
     df_sim = df.copy()
     if sim_type == "Electrification of Appliances":
-        df_sim.loc[(df_sim["Sector"] == "Domestic") & (df_sim["End Use"] == "Appliances"), "Energy Consumption (ktoe)"] *= 0.8
+        df_sim.loc[(df_sim["Sector"].str.contains("Domestic", case=False, na=False)) & (df_sim["End Use"].str.contains("Appliance", case=False, na=False)), "Energy Consumption (ktoe)"] *= 0.8
         st.write("⚙️ 20% energy savings from appliance electrification.")
-        fig = px.line(df_sim[df_sim["Sector"] == "Domestic"], x="Year", y="Energy Consumption (ktoe)", color="End Use", title="Domestic energy with appliance electrification")
-        base_long = df_sim[(df_sim['Sector'] == 'Domestic') & (df_sim['End Use'] == 'Appliances')][['Year','Energy Consumption (ktoe)']].rename(columns={'Energy Consumption (ktoe)':'Value'})
+        fig = px.line(df_sim[df_sim["Sector"].str.contains("Domestic", case=False, na=False)], x="Year", y="Energy Consumption (ktoe)", color="End Use", title="Domestic energy with appliance electrification")
+        base_long = df_sim[(df_sim['sector_norm'] == 'domestic/residential') & (df_sim['end_use_norm'] == 'appliances')][['Year','Energy Consumption (ktoe)']].rename(columns={'Energy Consumption (ktoe)':'Value'})
         base_long['Type'] = 'Scenario'
         fig = add_policy_overlays(fig, 'Domestic', 'Appliances', base_long, metric='energy')
         st.plotly_chart(fig, use_container_width=True)
 
     elif sim_type == "Services Rebound":
-        df_sim.loc[df_sim["Sector"] == "Services", "Energy Consumption (ktoe)"] *= 1.2
+        df_sim.loc[df_sim["Sector"].str.contains("Services|Commercial", case=False, na=False), "Energy Consumption (ktoe)"] *= 1.2
         st.write("📈 20% energy rebound in the Services sector.")
-        fig = px.line(df_sim[df_sim["Sector"] == "Services"], x="Year", y="Energy Consumption (ktoe)", color="End Use", title="Services energy with rebound")
-        base_long = df_sim[(df_sim['Sector'] == 'Services')][['Year','Energy Consumption (ktoe)']].groupby('Year').sum().reset_index().rename(columns={'Energy Consumption (ktoe)':'Value'})
+        fig = px.line(df_sim[df_sim["Sector"].str.contains("Services|Commercial", case=False, na=False)], x="Year", y="Energy Consumption (ktoe)", color="End Use", title="Services energy with rebound")
+        base_long = df_sim[df_sim['sector_norm'] == 'services/commercial'][['Year','Energy Consumption (ktoe)']].groupby('Year').sum().reset_index().rename(columns={'Energy Consumption (ktoe)':'Value'})
         base_long['Type'] = 'Scenario'
         fig = add_policy_overlays(fig, 'Services', 'HVAC & Lighting', base_long, metric='energy')
         st.plotly_chart(fig, use_container_width=True)
 
     elif sim_type == "Targeted Emission Cut":
-        df_sim.loc[(df_sim["Sector"] == "Industrial") & (df_sim["End Use"].str.contains("Process", case=False, na=False)), "Emissions (ktCO2e)"] *= 0.75
+        df_sim.loc[(df_sim["Sector"].str.contains("Industrial", case=False, na=False)) & (df_sim["End Use"].str.contains("Process", case=False, na=False)), "Emissions (ktCO2e)"] *= 0.75
         st.write("🔻 25% cut in emissions for industrial process heating.")
-        fig = px.line(df_sim[df_sim["Sector"] == "Industrial"], x="Year", y="Emissions (ktCO2e)", color="End Use", title="Industrial emissions with targeted cut")
-        base_long = df_sim[(df_sim['Sector'] == 'Industrial') & (df_sim['End Use'].str.contains('Process', case=False, na=False))][['Year','Emissions (ktCO2e)']].rename(columns={'Emissions (ktCO2e)':'Value'})
+        fig = px.line(df_sim[df_sim["Sector"].str.contains("Industrial", case=False, na=False)], x="Year", y="Emissions (ktCO2e)", color="End Use", title="Industrial emissions with targeted cut")
+        base_long = df_sim[(df_sim['sector_norm'] == 'industrial') & (df_sim['end_use_norm'] == 'process heat')][['Year','Emissions (ktCO2e)']].rename(columns={'Emissions (ktCO2e)':'Value'})
         base_long['Type'] = 'Scenario'
         fig = add_policy_overlays(fig, 'Industrial', 'Process heating', base_long, metric='emissions')
         st.plotly_chart(fig, use_container_width=True)
 
-    # ---- Custom intervention on a selected series ----
+    # ---- Custom intervention ----
     st.subheader("🧪 Intervention & Rebound Simulation")
     sel_sector = st.selectbox("Select Sector", sectors, key="sim_sector")
     sel_end_use = st.selectbox("Choose End Use", end_uses, key="sim_end_use")
@@ -373,42 +407,41 @@ elif selected_tab == "Simulations":
     fig5 = add_policy_overlays(fig5, sel_sector, sel_end_use, base_long_emis, metric='emissions')
     st.plotly_chart(fig5, use_container_width=True)
 
-    # ---- Combined Waterfall: 2030 deltas vs BAU by lever ----
+    # ---- 2030 Waterfall ----
     st.subheader("📉 2030 Net Emissions vs BAU — Policy Lever Contributions")
 
-    # Show quick debug of loaded overlays
     with st.expander("Overlay debug / status"):
         st.write("CSV path:", st.session_state.get('__policy_csv_path', 'not found'))
         st.write("JSON path:", st.session_state.get('__policy_json_path', 'not found'))
         st.write("Overlay rows:", len(policy_overlays))
         if not policy_overlays.empty:
             st.dataframe(policy_overlays[['sector','end_use','year','multiplier_emissions']].head(12))
+            st.write("Unique overlay pairs (normalized):", policy_overlays[['sector_norm','end_use_norm']].drop_duplicates().values.tolist())
 
     levers = [
-        {"name": "Domestic Space Heating (BUS/GBIS)", "ov_sector": "domestic/residential", "ov_end": "space heating", "ds_sector": "Domestic", "ds_end": "Space heating"},
-        {"name": "Domestic Appliances (Electrification)", "ov_sector": "domestic/residential", "ov_end": "appliances", "ds_sector": "Domestic", "ds_end": "Appliances"},
-        {"name": "Industrial Process Heat (CCUS)", "ov_sector": "industrial", "ov_end": "process heat", "ds_sector": "Industrial", "ds_end": "Process heating"},
-        {"name": "Services HVAC & Lighting (MEES/PSDS)", "ov_sector": "services/commercial", "ov_end": "hvac & lighting", "ds_sector": "Services", "ds_end": "Lighting"},
+        {"name":"Domestic Space Heating (BUS/GBIS)",       "ov_sector":"domestic/residential", "ov_end":"space heating"},
+        {"name":"Domestic Appliances (Electrification)",   "ov_sector":"domestic/residential", "ov_end":"appliances"},
+        {"name":"Industrial Process Heat (CCUS)",          "ov_sector":"industrial",            "ov_end":"process heat"},
+        {"name":"Services HVAC & Lighting (MEES/PSDS)",    "ov_sector":"services/commercial",  "ov_end":"hvac & lighting"},
     ]
 
     contrib_names, contrib_vals = [], []
+    missing = []
     for lv in levers:
-        # BAU 2030 for dataset combo
-        bau2030 = forecast_scalar_2030(df, lv['ds_sector'], lv['ds_end'], 'Emissions (ktCO2e)')
+        bau2030 = bau2030_norm(df, lv['ov_sector'], lv['ov_end'])
         if not np.isfinite(bau2030):
+            missing.append((lv['name'], 'no BAU match in dataset (even after fallback)'))
             continue
         row2030 = get_overlay_row(lv['ov_sector'], lv['ov_end'], 2030)
         if row2030 is None:
+            missing.append((lv['name'], 'no overlay row at/near 2030'))
             continue
-        try:
-            mult = float(row2030['multiplier_emissions'])
-        except Exception:
-            continue
-        overlay_val = float(bau2030) * mult
-        delta = bau2030 - overlay_val  # reduction
+        mult = float(row2030.get('multiplier_emissions', 1.0))
+        overlay_val = bau2030 * mult
+        delta = bau2030 - overlay_val
         if np.isfinite(delta) and abs(delta) > 0:
             contrib_names.append(lv['name'])
-            contrib_vals.append(-delta)  # negative values to show reduction
+            contrib_vals.append(-delta)
 
     if contrib_names:
         measures = ["relative"] * len(contrib_names) + ["total"]
@@ -420,12 +453,25 @@ elif selected_tab == "Simulations":
             measure=measures,
             x=xs,
             y=ys,
+            text=[f"{v:.0f}" for v in contrib_vals] + [""],
+            textposition="outside",
             connector={"line": {"dash": "dot"}}
         ))
-        figw.update_layout(yaxis_title="Δ Emissions vs BAU in 2030 (ktCO₂e)")
+        figw.update_layout(
+            xaxis_title="Lever",
+            yaxis_title="Δ Emissions vs BAU in 2030 (ktCO₂e)",
+            waterfallgap=0.3,
+            showlegend=False,
+        )
+        figw.update_yaxes(zeroline=True, zerolinewidth=1)
         st.plotly_chart(figw, use_container_width=True)
     else:
-        st.info("No matching overlays found to compute the waterfall. Confirm the CSV paths and that the file contains rows for: Domestic/Residential–Space heating, Domestic/Residential–Appliances, Industrial–Process heat, Services/Commercial–HVAC & Lighting (with year 2030). You can expand the debug panel above to inspect.")
+        st.info("No matching overlays found to compute the waterfall. Confirm CSV paths and ensure 2030 rows exist for the four overlay pairs (see debug panel).")
+
+    if missing:
+        with st.expander("Why some bars are missing?"):
+            for name, reason in missing:
+                st.write(f"• {name}: {reason}")
 
 elif selected_tab == "SHAP Explainability":
     st.subheader("🧠 SHAP Explainability for Emissions")
@@ -452,7 +498,7 @@ elif selected_tab == "SHAP Explainability":
     shap_values = explainer(X_test)
 
     st.write("Feature Importance (SHAP Summary)")
-    fig, ax = plt.subplots()
+    fig, _ = plt.subplots()
     shap.plots.beeswarm(shap_values, show=False)
     st.pyplot(fig)
 
@@ -474,7 +520,7 @@ elif selected_tab == "SHAP Explainability":
         st.components.v1.html(html, height=400)
     except Exception as e:
         st.info(f"Interactive force plot unavailable ({e}). Showing a static waterfall instead.")
-        fig2, ax2 = plt.subplots()
+        fig2, _ = plt.subplots()
         shap.plots.waterfall(shap_vals2[selected_row], show=False)
         st.pyplot(fig2)
 
