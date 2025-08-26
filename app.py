@@ -322,8 +322,39 @@ elif selected_tab == "Forecasting":
             fig_emis.add_trace(go.Scatter(x=cur['Year'], y=cur['Value'], mode="lines+markers", name=f"Emissions ({t})"))
         if show_policy:
             fig_emis = add_policy_overlays(fig_emis, selected_sector, selected_end_use, emissions_long, metric='emissions')
-        fig_emis.update_layout(xaxis_title="Year", yaxis_title="Emissions (ktCO₂e)")
-        st.plotly_chart(fig_emis, use_container_width=True)
+
+    # —— Figure 4.C counterfactual (No Grid Decarbonisation) ——
+    with st.expander("Counterfactual: Hold grid carbon-intensity constant (Figure 4.C)"):
+        cf_on = st.checkbox("Show counterfactual on this chart", value=False, key="cf_toggle_forecasting")
+        baseline_len = st.slider("Baseline window (years)", 1, 5, 3, help="We average the last N historical years of intensity to form a constant baseline.")
+        if cf_on and not intensity_long.empty:
+            hist_int = intensity_long[intensity_long['Type'].eq('Historical')].dropna()
+            if not hist_int.empty:
+                last_hist_year = int(hist_int['Year'].max())
+                baseline_win = hist_int[hist_int['Year'] >= last_hist_year - (baseline_len - 1)]
+                baseline_intensity = baseline_win['Value'].mean()
+                merged = pd.merge(
+                    emissions_long[['Year','Value','Type']],
+                    intensity_long[['Year','Value','Type']],
+                    on=['Year','Type'],
+                    how='inner',
+                    suffixes=('_emis','_int')
+                ).dropna()
+                # avoid divide-by-zero
+                merged = merged[merged['Value_int'] != 0]
+                if not merged.empty:
+                    merged['cf_value'] = merged['Value_emis'].astype(float) * (baseline_intensity / merged['Value_int'].astype(float))
+                    fig_emis.add_trace(go.Scatter(
+                        x=merged['Year'], y=merged['cf_value'],
+                        mode='lines', name='Counterfactual (no grid decarb)',
+                        line=dict(dash='dot')
+                    ))
+                    st.caption(f"Counterfactual uses intensity baseline = {baseline_intensity:.4f} ktCO₂e/ktoe computed from {int(baseline_win['Year'].min())}–{int(baseline_win['Year'].max())}.")
+            else:
+                st.info("Not enough historical intensity data to compute the baseline.")
+
+    fig_emis.update_layout(xaxis_title="Year", yaxis_title="Emissions (ktCO₂e)")
+    st.plotly_chart(fig_emis, use_container_width=True)
 
     # Emission Intensity with overlays
     st.markdown("### ⚖️ Emission Intensity (ktCO₂e/ktoe): Historical + Forecast to 2030")
@@ -333,7 +364,7 @@ elif selected_tab == "Forecasting":
             cur = intensity_long[intensity_long['Type'] == t]
             fig_int.add_trace(go.Scatter(x=cur['Year'], y=cur['Value'], mode="lines+markers", name=f"Intensity ({t})"))
         if show_policy:
-            fig_int = add_policy_overlays(fig_int, selected_sector, selected_end_use, intensity_long, metric='emissions')
+            fig_int = add_policy_overlays(fig_int, selected_sector, selected_end_use, intensity_long, metric='intensity')
         fig_int.update_layout(xaxis_title="Year", yaxis_title="ktCO₂e/ktoe")
         st.plotly_chart(fig_int, use_container_width=True)
 
