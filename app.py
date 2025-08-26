@@ -324,7 +324,7 @@ elif selected_tab == "Forecasting":
             fig_emis = add_policy_overlays(fig_emis, selected_sector, selected_end_use, emissions_long, metric='emissions')
 
     # —— Figure 4.C counterfactual (No Grid Decarbonisation) ——
-    with st.expander("Counterfactual: Hold grid carbon-intensity constant (Figure 4.C)"):
+    with st.expander("Counterfactual: Hold grid carbon-intensity constant"):
         cf_on = st.checkbox("Show counterfactual on this chart", value=False, key="cf_toggle_forecasting")
         baseline_len = st.slider("Baseline window (years)", 1, 5, 3, help="We average the last N historical years of intensity to form a constant baseline.")
         if cf_on and not intensity_long.empty:
