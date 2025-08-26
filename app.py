@@ -67,7 +67,7 @@ df['end_use_norm'] = df['End Use'].apply(_norm_end_use)
 
 with st.sidebar:
     st.title("⚡ Energy Dashboard")
-    selected_tab = st.radio("Navigate", ["Sector Overview", "Trends", "Forecasting", "Simulations", "SHAP Explainability", "EDA"]) 
+    selected_tab = st.radio("Navigate", ["Sector Overview", "Trends", "Forecasting", "Simulations", "Policy Timeline", "SHAP Explainability", "EDA"]) 
 
 # Robust loaders for policy files (CSV + JSON)
 def _try_read_csv(paths: List[str]) -> pd.DataFrame:
@@ -270,6 +270,57 @@ def add_policy_overlays(fig: go.Figure, sector: str, end_use: str, base_long: pd
     except Exception:
         pass
 
+    return fig
+
+
+# Figure — Policy Timeline Lollipop (BUS/GBIS/ETS/CBAM/PSDS)
+def build_policy_timeline_figure():
+    if not policy_events:
+        return go.Figure()
+    events = []
+    for e in policy_events:
+        dt = pd.to_datetime(e.get('date', None), errors='coerce')
+        label = str(e.get('event', '')).strip()
+        if pd.isna(dt) or not label:
+            continue
+        lbl = label.upper()
+        if 'BUS' in lbl:
+            group = 'BUS'
+        elif 'GBIS' in lbl:
+            group = 'GBIS'
+        elif 'CBAM' in lbl:
+            group = 'CBAM'
+        elif 'ETS' in lbl:
+            group = 'ETS'
+        elif 'PSDS' in lbl:
+            group = 'PSDS'
+        else:
+            group = 'Other'
+        events.append({'date': dt, 'event': label, 'group': group})
+    if not events:
+        return go.Figure()
+
+    ev = pd.DataFrame(events).sort_values('date')
+    y_stem_top = 0.25
+    fig = go.Figure()
+    for _, row in ev.iterrows():
+        fig.add_shape(type='line', x0=row['date'], x1=row['date'], y0=0, y1=y_stem_top, line=dict(color='lightgray', width=2))
+    fig.add_trace(go.Scatter(
+        x=ev['date'], y=[y_stem_top]*len(ev), mode='markers+text',
+        marker=dict(size=10), text=ev['event'], textposition='top center',
+        hovertext=ev['group'], name='Policy events'
+    ))
+    fig.update_layout(
+        title="Figure — Policy Timeline (BUS/GBIS/ETS/CBAM/PSDS)",
+        xaxis_title="Date", yaxis=dict(visible=False, range=[-0.1, 0.6]),
+        showlegend=False, margin=dict(l=40, r=40, t=60, b=40)
+    )
+    try:
+        xmin = ev['date'].min() - pd.Timedelta(days=30)
+        xmax = ev['date'].max() + pd.Timedelta(days=30)
+        fig.update_xaxes(range=[xmin, xmax])
+    except Exception:
+        pass
     return fig
 
 # Tabs
@@ -503,6 +554,15 @@ elif selected_tab == "Simulations":
         with st.expander("Why some bars are missing?"):
             for name, reason in missing:
                 st.write(f"• {name}: {reason}")
+
+elif selected_tab == "Policy Timeline":
+    st.subheader("🗓️ Policy Timeline Lollipop — mirrors dashboard event markers")
+    if not policy_events:
+        st.info("No policy_events.json loaded. Place it at project root or data/.")
+    else:
+        fig_tl = build_policy_timeline_figure()
+        st.plotly_chart(fig_tl, use_container_width=True)
+        st.caption("Caption: Single visual timeline; mirrors dashboard event markers; anchors risk discussion.")
 
 elif selected_tab == "SHAP Explainability":
     st.subheader("🧠 SHAP Explainability for Emissions")
