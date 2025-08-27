@@ -118,7 +118,7 @@ cd Energy-Forecast-Dashboard
 
 # 2) (optional) create venv
 python -m venv dsp-env
-source dsp-env/bin/activate  # Windows: .\dsp-env\Scripts\activate
+.\dsp-env\Scripts\activate  # Linux: source dsp-env/bin/activate  # To activate.
 
 # 3) install deps
 pip install -r requirements.txt
