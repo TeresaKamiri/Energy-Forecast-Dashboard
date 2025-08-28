@@ -198,68 +198,128 @@ def bau2030_norm(df_in: pd.DataFrame, sector_norm: str, end_norm: str) -> float:
         return float(y.iloc[-1])
 
 # Plot helper: overlays + vertical policy events
-def add_policy_overlays(fig: go.Figure, sector: str, end_use: str, base_long: pd.DataFrame, metric: str = 'emissions') -> go.Figure:
-    """Add dashed policy path + vertical policy events to a Plotly fig.
-    For forecasting views, the overlay follows the BAU series year-by-year:
-    y_overlay(year) = BAU_value(year) * policy_multiplier(year).
-    metric ∈ {'emissions','energy','intensity'} controls which multiplier(s) are used.
+
+def add_policy_overlays(fig: go.Figure, sector: str, end_use: str, base_long: pd.DataFrame,
+                        metric: str = 'emissions',
+                        label_tilt: int = -25,
+                        min_days_separation: int = 120,
+                        compact_labels: bool = True) -> go.Figure:
+    """
+    Add deterministic policy overlays (lines) + policy event markers to a base figure,
+    with collision-avoidance for text labels on time-series charts.
+    - Uses annotations (not Scatter.text) so rotation works broadly.
+    - Wraps/compacts labels (BUS/GBIS/ETS/CBAM/PSDS) and staggers when events are near.
     """
     sector_o, end_use_o = _norm_sector(sector), _norm_end_use(end_use)
     ov_year_min = ov_year_max = None
 
-    # ---- Build overlay path by merging overlay multipliers with BAU/base series ----
+    # ---------- Overlay line (unchanged logic) ----------
     if not policy_overlays.empty and not base_long.empty:
         ov = policy_overlays[(policy_overlays['sector_norm'] == sector_o) & (policy_overlays['end_use_norm'] == end_use_o)].copy()
         if not ov.empty:
-            # Select appropriate multiplier(s)
             col_e = 'multiplier_energy'
             col_c = 'multiplier_emissions'
-            needed_cols = [col_e, col_c]
-            for c in needed_cols:
+            for c in [col_e, col_c]:
                 if c not in ov.columns:
                     ov[c] = np.nan
             ov['year'] = pd.to_numeric(ov['year'], errors='coerce')
             base = base_long[['Year','Value']].dropna().copy()
             base['Year'] = pd.to_numeric(base['Year'], errors='coerce')
 
-            # Choose multiplier logic
             if metric == 'energy':
                 ov['mult'] = pd.to_numeric(ov[col_e], errors='coerce')
             elif metric == 'intensity':
-                # Intensity ≈ Emissions/Energy, so apply ratio of multipliers when available
                 me = pd.to_numeric(ov[col_c], errors='coerce')
                 en = pd.to_numeric(ov[col_e], errors='coerce')
                 ov['mult'] = (me / en).replace([np.inf, -np.inf], np.nan)
-            else:  # 'emissions'
+            else:
                 ov['mult'] = pd.to_numeric(ov[col_c], errors='coerce')
 
             merged = pd.merge(ov[['year','mult']], base, left_on='year', right_on='Year', how='left')
             merged = merged.dropna(subset=['year','mult','Value']).sort_values('year')
             if not merged.empty:
                 y_overlay = merged['Value'].astype(float) * merged['mult'].astype(float)
-                fig.add_trace(go.Scatter(x=merged['year'], y=y_overlay, mode="lines+markers", name="Policy path", line=dict(dash="dash")))
+                fig.add_trace(go.Scatter(x=merged['year'], y=y_overlay, mode="lines+markers",
+                                         name="Policy path", line=dict(dash="dash")))
                 ov_year_min, ov_year_max = int(merged['year'].min()), int(merged['year'].max())
 
-    # ---- Event markers ----
+    # ---------- Event markers (new: smart labels) ----------
+    def _wrap(s: str, width: int = 26) -> str:
+        words = str(s).split()
+        lines, cur = [], ''
+        for w in words:
+            if len(cur) + len(w) + 1 > width:
+                if cur:
+                    lines.append(cur)
+                cur = w
+            else:
+                cur = (cur + ' ' + w).strip()
+        if cur:
+            lines.append(cur)
+        return '<br>'.join(lines)
+
+    def _compact(s: str) -> str:
+        s2 = s.replace('United Kingdom', 'UK').replace('Government', 'Govt')
+        s2 = s2.replace('Public Sector Decarbonisation Scheme', 'PSDS')
+        s2 = s2.replace('Carbon Border Adjustment Mechanism', 'CBAM')
+        s2 = s2.replace('Emissions Trading Scheme', 'ETS')
+        s2 = s2.replace('Boiler Upgrade Scheme', 'BUS')
+        s2 = s2.replace('Great British Insulation Scheme', 'GBIS')
+        return s2
+
     if policy_events:
-        y_max = None
+        # Establish a safe label baseline slightly above the data
+        y_vals = []
         if 'Value' in base_long.columns and base_long['Value'].notna().any():
-            y_max = float(base_long['Value'].max())
-        if y_max is None:
+            y_vals.extend(base_long['Value'].tolist())
+        for tr in fig.data:
             try:
-                y_max = max([np.nanmax(getattr(tr, 'y', np.array([0]))) for tr in fig.data])
+                y_vals.extend([v for v in tr.y if v is not None])
             except Exception:
-                y_max = 0
+                pass
+        if not y_vals:
+            y_vals = [0, 1]
+        y_min, y_max = float(min(y_vals)), float(max(y_vals))
+        span = max(1.0, y_max - y_min)
+        y_top = y_max + 0.05 * span  # base height for labels
+
+        # Build and sort events
+        ev = []
         for e in policy_events:
             try:
-                year = int(str(e.get("date", "").split("-")[0]))
+                year = int(str(e.get("date","")).split("-")[0])
             except Exception:
                 year = None
-            if year:
-                fig.add_vline(x=year, line_width=1, line_dash="dot", line_color="gray")
-                fig.add_annotation(x=year, y=y_max, text=e.get("event",""), showarrow=False, yshift=10, font=dict(size=9))
+            label = str(e.get("event","")).strip()
+            if year and label:
+                ev.append((year, label))
+        ev.sort()
 
-    # ---- Ensure x‑axis includes overlay years ----
+        # Staggering parameters
+        y_offsets = [0.00, 0.06, 0.12, 0.18]  # as fraction of span
+        last_x = None
+        level_idx = 0
+
+        for i, (x_year, label) in enumerate(ev):
+            # Vertical line at the event year (numeric axis)
+            fig.add_vline(x=x_year, line_width=1, line_dash="dot", line_color="gray")
+
+            if last_x is not None and (x_year - last_x) < (min_days_separation / 365.0):  # numeric-year axis heuristic
+                level_idx += 1
+            else:
+                level_idx = 0
+            last_x = x_year
+
+            y_ann = y_top + y_offsets[level_idx % len(y_offsets)] * span
+            text = _wrap(_compact(label), 28) if compact_labels else label
+            xanchor = 'left' if i % 2 == 0 else 'right'
+            xshift = 6 if xanchor == 'left' else -6
+
+            fig.add_annotation(x=x_year, y=y_ann, text=text, showarrow=False,
+                               xanchor=xanchor, yanchor='bottom', xshift=xshift, yshift=0,
+                               textangle=label_tilt, align='center')
+
+    # Ensure x-axis includes overlay years
     try:
         base_year_min = int(pd.to_numeric(base_long.get('Year'), errors='coerce').dropna().min()) if 'Year' in base_long else None
         base_year_max = int(pd.to_numeric(base_long.get('Year'), errors='coerce').dropna().max()) if 'Year' in base_long else None
@@ -274,9 +334,16 @@ def add_policy_overlays(fig: go.Figure, sector: str, end_use: str, base_long: pd
 
 
 # Figure — Policy Timeline Lollipop (BUS/GBIS/ETS/CBAM/PSDS)
-def build_policy_timeline_figure():
+
+
+def build_policy_timeline_figure(compact_labels: bool = True, tilt: int = -25, min_days_separation: int = 90):
+    """Lollipop policy timeline with label dodging + Plotly compatibility.
+    Uses layout.annotations for text (so no Scatter.textangle is required).
+    """
     if not policy_events:
         return go.Figure()
+
+    # Parse events
     events = []
     for e in policy_events:
         dt = pd.to_datetime(e.get('date', None), errors='coerce')
@@ -300,27 +367,97 @@ def build_policy_timeline_figure():
     if not events:
         return go.Figure()
 
-    ev = pd.DataFrame(events).sort_values('date')
-    y_stem_top = 0.25
+    ev = pd.DataFrame(events).sort_values('date').reset_index(drop=True)
+
+    # Helpers: wrap & compact labels
+    def _wrap(s: str, width: int = 22) -> str:
+        words = str(s).split()
+        lines, cur = [], ''
+        for w in words:
+            if len(cur) + len(w) + 1 > width:
+                if cur:
+                    lines.append(cur)
+                cur = w
+            else:
+                cur = (cur + ' ' + w).strip()
+        if cur:
+            lines.append(cur)
+        return '<br>'.join(lines)
+
+    def _compact(s: str) -> str:
+        s2 = s.replace('United Kingdom', 'UK').replace('Government', 'Govt')
+        s2 = s2.replace('Public Sector Decarbonisation Scheme', 'PSDS')
+        s2 = s2.replace('Carbon Border Adjustment Mechanism', 'CBAM')
+        s2 = s2.replace('Emissions Trading Scheme', 'ETS')
+        s2 = s2.replace('Boiler Upgrade Scheme', 'BUS')
+        s2 = s2.replace('Great British Insulation Scheme', 'GBIS')
+        return s2
+
+    # Stagger labels when dates are close
+    y_levels = [0.30, 0.22, 0.36, 0.16]
+    y_text, anchors = [], []
+    last_x = None
+    level_idx = 0
+    min_sep = pd.Timedelta(days=int(min_days_separation))
+    for i, x in enumerate(ev['date']):
+        if last_x is not None and (x - last_x) < min_sep:
+            level_idx += 1
+        else:
+            level_idx = 0
+        y_text.append(y_levels[level_idx % len(y_levels)])
+        anchors.append('left' if i % 2 == 0 else 'right')
+        last_x = x
+
+    # Build figure
     fig = go.Figure()
-    for _, row in ev.iterrows():
-        fig.add_shape(type='line', x0=row['date'], x1=row['date'], y0=0, y1=y_stem_top, line=dict(color='lightgray', width=2))
+
+    # stems
+    for i, row in ev.iterrows():
+        fig.add_shape(type='line', x0=row['date'], x1=row['date'], y0=0, y1=y_text[i]-0.02,
+                      line=dict(color='lightgray', width=2))
+
+    # markers (no text in scatter for wide Plotly compat)
     fig.add_trace(go.Scatter(
-        x=ev['date'], y=[y_stem_top]*len(ev), mode='markers+text',
-        marker=dict(size=10), text=ev['event'], textposition='top center',
-        hovertext=ev['group'], name='Policy events'
+        x=ev['date'], y=y_text,
+        mode='markers',
+        marker=dict(size=10),
+        name='Policy events',
+        hovertext=ev['event'],
+        hoverinfo='text'
     ))
+
+    # labels via annotations (supporting textangle across Plotly versions)
+    labels = []
+    for s in ev['event']:
+        lab = _compact(s) if compact_labels else s
+        lab = _wrap(lab, 24) if compact_labels else lab
+        labels.append(lab)
+
+    for i, (x, y, t, anc) in enumerate(zip(ev['date'], y_text, labels, anchors)):
+        xshift = 6 if anc == 'left' else -6
+        fig.add_annotation(
+            x=x, y=y, text=t, showarrow=False,
+            xanchor=anc, yanchor='bottom',
+            xshift=xshift, yshift=2,
+            textangle=tilt
+        )
+
     fig.update_layout(
         title="Figure — Policy Timeline (BUS/GBIS/ETS/CBAM/PSDS)",
-        xaxis_title="Date", yaxis=dict(visible=False, range=[-0.1, 0.6]),
-        showlegend=False, margin=dict(l=40, r=40, t=60, b=40)
+        xaxis_title="Date",
+        yaxis=dict(visible=False, range=[-0.1, 0.6]),
+        showlegend=False,
+        margin=dict(l=40, r=40, t=60, b=40),
     )
+
+    # pad x‑axis
     try:
         xmin = ev['date'].min() - pd.Timedelta(days=30)
         xmax = ev['date'].max() + pd.Timedelta(days=30)
         fig.update_xaxes(range=[xmin, xmax])
     except Exception:
         pass
+
     return fig
 
 # Tabs
@@ -344,8 +481,13 @@ if selected_tab == "Trends":
 elif selected_tab == "Forecasting":
     st.subheader("🔮 Forecast to 2030: Emissions & Emission Intensity (Historical + Forecast)")
 
-    selected_sector = st.selectbox("Select Sector", sectors, key="forecast_sector")
-    selected_end_use = st.selectbox("Choose End Use", end_uses)
+    from itertools import islice
+    candidate_sectors = [s for s in sectors if not df[(df["Sector"]==s) & (df["End Use"].str.contains("space heat", case=False, na=False))].empty]
+    default_sector_idx = sectors.index(candidate_sectors[0]) if candidate_sectors else 0
+    selected_sector = st.selectbox("Select Sector", sectors, index=default_sector_idx, key="forecast_sector")
+    default_end_idx = next((i for i,eu in enumerate(end_uses) if "space" in eu.lower() and "heat" in eu.lower()), 0)
+    selected_end_use = st.selectbox("Choose End Use", end_uses, index=default_end_idx)
+
     show_policy = st.checkbox("Show policy overlays & events", value=True)
 
     df_series = df[(df['Sector'] == selected_sector) & (df['End Use'] == selected_end_use)].copy()
@@ -374,35 +516,35 @@ elif selected_tab == "Forecasting":
         if show_policy:
             fig_emis = add_policy_overlays(fig_emis, selected_sector, selected_end_use, emissions_long, metric='emissions')
 
-    # —— Figure 4.C counterfactual (No Grid Decarbonisation) ——
-    with st.expander("Counterfactual: Hold grid carbon-intensity constant"):
-        cf_on = st.checkbox("Show counterfactual on this chart", value=False, key="cf_toggle_forecasting")
-        baseline_len = st.slider("Baseline window (years)", 1, 5, 3, help="We average the last N historical years of intensity to form a constant baseline.")
-        if cf_on and not intensity_long.empty:
-            hist_int = intensity_long[intensity_long['Type'].eq('Historical')].dropna()
-            if not hist_int.empty:
-                last_hist_year = int(hist_int['Year'].max())
-                baseline_win = hist_int[hist_int['Year'] >= last_hist_year - (baseline_len - 1)]
-                baseline_intensity = baseline_win['Value'].mean()
-                merged = pd.merge(
-                    emissions_long[['Year','Value','Type']],
-                    intensity_long[['Year','Value','Type']],
-                    on=['Year','Type'],
-                    how='inner',
-                    suffixes=('_emis','_int')
-                ).dropna()
-                # avoid divide-by-zero
-                merged = merged[merged['Value_int'] != 0]
-                if not merged.empty:
-                    merged['cf_value'] = merged['Value_emis'].astype(float) * (baseline_intensity / merged['Value_int'].astype(float))
-                    fig_emis.add_trace(go.Scatter(
-                        x=merged['Year'], y=merged['cf_value'],
-                        mode='lines', name='Counterfactual (no grid decarb)',
-                        line=dict(dash='dot')
-                    ))
-                    st.caption(f"Counterfactual uses intensity baseline = {baseline_intensity:.4f} ktCO₂e/ktoe computed from {int(baseline_win['Year'].min())}–{int(baseline_win['Year'].max())}.")
-            else:
-                st.info("Not enough historical intensity data to compute the baseline.")
+        # —— Figure 4.C counterfactual (No Grid Decarbonisation) ——
+        with st.expander("Counterfactual: Hold grid carbon-intensity constant", expanded=True):
+            cf_on = st.checkbox("Show counterfactual on this chart", value=True, key="cf_toggle_forecasting")
+            baseline_len = st.slider("Baseline window (years)", 1, 5, 3, help="We average the last N historical years of intensity to form a constant baseline.")
+            if cf_on and not intensity_long.empty:
+                hist_int = intensity_long[intensity_long['Type'].eq('Historical')].dropna()
+                if not hist_int.empty:
+                    last_hist_year = int(hist_int['Year'].max())
+                    baseline_win = hist_int[hist_int['Year'] >= last_hist_year - (baseline_len - 1)]
+                    baseline_intensity = baseline_win['Value'].mean()
+                    merged = pd.merge(
+                        emissions_long[['Year','Value','Type']],
+                        intensity_long[['Year','Value','Type']],
+                        on=['Year','Type'],
+                        how='inner',
+                        suffixes=('_emis','_int')
+                    ).dropna()
+                    # avoid divide-by-zero
+                    merged = merged[merged['Value_int'] != 0]
+                    if not merged.empty:
+                        merged['cf_value'] = merged['Value_emis'].astype(float) * (baseline_intensity / merged['Value_int'].astype(float))
+                        fig_emis.add_trace(go.Scatter(
+                            x=merged['Year'], y=merged['cf_value'],
+                            mode='lines', name='Counterfactual (no grid decarb)',
+                            line=dict(dash='dot')
+                        ))
+                        st.caption(f"Counterfactual uses intensity baseline = {baseline_intensity:.4f} ktCO₂e/ktoe computed from {int(baseline_win['Year'].min())}–{int(baseline_win['Year'].max())}.")
+                else:
+                    st.info("Not enough historical intensity data to compute the baseline.")
 
     fig_emis.update_layout(xaxis_title="Year", yaxis_title="Emissions (ktCO₂e)")
     st.plotly_chart(fig_emis, use_container_width=True)
@@ -416,7 +558,10 @@ elif selected_tab == "Forecasting":
             fig_int.add_trace(go.Scatter(x=cur['Year'], y=cur['Value'], mode="lines+markers", name=f"Intensity ({t})"))
         if show_policy:
             fig_int = add_policy_overlays(fig_int, selected_sector, selected_end_use, intensity_long, metric='intensity')
-        fig_int.update_layout(xaxis_title="Year", yaxis_title="ktCO₂e/ktoe")
+        fig_int.update_layout(
+            xaxis_title="Year",
+            yaxis_title="ktCO₂e/ktoe"
+        )
         st.plotly_chart(fig_int, use_container_width=True)
 
     with st.expander("Model diagnostics"):
@@ -560,7 +705,14 @@ elif selected_tab == "Policy Timeline":
     if not policy_events:
         st.info("No policy_events.json loaded. Place it at project root or data/.")
     else:
-        fig_tl = build_policy_timeline_figure()
+        col1, col2, col3 = st.columns([1,1,2])
+        with col1:
+            compact = st.checkbox("Compact labels", True, help="Wrap & abbreviate long labels; full text on hover")
+        with col2:
+            tilt = st.slider("Label angle", -45, 0, -25, 1)
+        with col3:
+            sep = st.slider("Min days to stagger", 30, 180, 90, 15, help="If events are closer than this, they are vertically staggered")
+        fig_tl = build_policy_timeline_figure(compact_labels=compact, tilt=tilt, min_days_separation=sep)
         st.plotly_chart(fig_tl, use_container_width=True)
         st.caption("Caption: Single visual timeline; mirrors dashboard event markers; anchors risk discussion.")
 
